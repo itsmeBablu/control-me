@@ -123,7 +123,7 @@ export default function App() {
     try {
       while (angleToSend !== null) {
         const data = new Uint8Array([angleToSend]);
-        await characteristicRef.current.writeValueWithoutResponse(data);
+        await characteristicRef.current.writeValue(data);
         
         // Grab the next angle queued, and reset queue pointer
         angleToSend = nextAngleRef.current;
@@ -132,6 +132,7 @@ export default function App() {
     } catch (err: any) {
       console.error("BLE Write error:", err);
       addLog(`Write Error: ${err.message}`);
+      alert(`Write failed: ${err.message}\nPlease unpair/forget the device, restart ESP32, and try reconnecting.`);
     } finally {
       writingRef.current = false;
     }
