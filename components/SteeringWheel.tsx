@@ -22,6 +22,10 @@ export default function SteeringWheel({
   const lastPointerAngleRef = useRef<number | null>(null);
   const wheelRotationRef = useRef<number>(0);
 
+  // Spring-return velocity (servo-degrees/frame). Persists across re-renders so
+  // the wheel keeps its momentum between animation frames.
+  const returnVelocityRef = useRef<number>(0);
+
   // Keyboard driving listeners (A/D or ArrowLeft/ArrowRight)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -71,11 +75,36 @@ export default function SteeringWheel({
           onSteer(Math.round(nextAngle));
         }
       } else if (!isDragging && steerAngle !== 90) {
-        // Spring return: Snap back to center (90)
-        // Returns proportionally to center position
+        // ── Real steering spring-return physics ──────────────────────────────
+        // Simulates power-steering self-centering: a spring pulls the wheel
+        // toward 90 and damping bleeds off accumulated velocity each frame.
+        //
+        //   spring coefficient  k  = 0.028   (gentle pull — lower = slower start)
+        //   damping coefficient  c  = 0.82    (1.0 = no damping, 0.0 = instant stop)
+        //   dead-zone                ≤ 0.15   (avoids endless micro-jitter at center)
+        //
+        // The model: v(t+1) = (v(t) + k * diff) * c
+        // ──────────────────────────────────────────────────────────────────────
+        const k = 0.028;   // spring stiffness — increase for snappier return
+        const c = 0.82;    // damping factor   — increase for less resistance
+
         const diff = 90 - steerAngle;
-        const snapStep = Math.sign(diff) * Math.max(0.5, Math.min(6, Math.abs(diff) * 0.12));
-        onSteer(Math.round(steerAngle + snapStep));
+
+        // Accelerate toward center, then damp
+        returnVelocityRef.current = (returnVelocityRef.current + k * diff) * c;
+
+        const next = steerAngle + returnVelocityRef.current;
+
+        if (Math.abs(diff) < 0.15) {
+          // Close enough — snap clean to center and kill velocity
+          returnVelocityRef.current = 0;
+          onSteer(90);
+        } else {
+          onSteer(Math.round(Math.max(0, Math.min(180, next))));
+        }
+      } else if (!isDragging && steerAngle === 90) {
+        // Already centered — kill residual velocity
+        returnVelocityRef.current = 0;
       }
 
       requestAnimationFrame(tick);
