@@ -8,19 +8,24 @@ import SteeringWheel from "@/components/SteeringWheel";
 import Pedals from "@/components/Pedals";
 import LightControls from "@/components/LightControls";
 
+const BLE_SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
+const BLE_CHARACTERISTIC_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
+
 export default function App() {
   const [mounted, setMounted] = useState(false);
   const [connected, setConnected] = useState(false);
   const [status, setStatus] = useState("Disconnected");
   
-  // WiFi configurations
+  // Connection configurations
   const [ipAddress, setIpAddress] = useState("192.168.4.1");
-  const [connMode, setConnMode] = useState<"ws" | "http">("ws");
+  const [connMode, setConnMode] = useState<"ws" | "http" | "ble">("ble");
   
   // Controls state
   const [steerAngle, setSteerAngle] = useState(90); // 0 to 180 (90 is center)
   const [speed, setSpeed] = useState(0);           // -100 to 100
   const [isBraking, setIsBraking] = useState(false);
+  const [debugServoActive, setDebugServoActive] = useState(false);
+  const [debugAngle, setDebugAngle] = useState(90);
   
   // Lighting state
   const [lights, setLights] = useState({
@@ -39,6 +44,8 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const pingIntervalRef = useRef<any>(null);
   const transmissionIntervalRef = useRef<any>(null);
+  const bleCharacteristicRef = useRef<any>(null);
+  const bleDeviceRef = useRef<any>(null);
 
   // High-frequency control refs to prevent React state closure lag
   const stateRef = useRef({
@@ -48,7 +55,8 @@ export default function App() {
     isBraking: false,
     lights: { headlights: false, hazards: false, neon: false },
     ipAddress: "192.168.4.1",
-    connMode: "ws" as "ws" | "http"
+    connMode: "ws" as "ws" | "http" | "ble",
+    debugServoActive: false
   });
 
   // Update refs when state changes
@@ -60,9 +68,10 @@ export default function App() {
       isBraking,
       lights,
       ipAddress,
-      connMode
+      connMode,
+      debugServoActive
     };
-  }, [connected, steerAngle, speed, isBraking, lights, ipAddress, connMode]);
+  }, [connected, steerAngle, speed, isBraking, lights, ipAddress, connMode, debugServoActive]);
 
   // Keep track of last sent packet to avoid spamming identical data
   const lastSentRef = useRef<string>("");
@@ -77,7 +86,7 @@ export default function App() {
   // System Mount Guard
   useEffect(() => {
     setMounted(true);
-    addLog("Porsche Cockpit System initialized. Ready to connect over WiFi.");
+    addLog("Porsche Cockpit System initialized. Ready to connect via Bluetooth.");
     SoundEngine.setMuted(false); // default active
   }, [addLog]);
 
@@ -135,7 +144,8 @@ export default function App() {
 
         socket.onerror = (err) => {
           console.error("WebSocket Link Error", err);
-          addLog("WebSocket encountered link protocol error.");
+          setStatus("Connection Failed");
+          addLog("WebSocket link failed — are you on the ESP32 WiFi?");
         };
 
         socket.onclose = () => {
@@ -188,11 +198,60 @@ export default function App() {
       wsRef.current = null;
     }
     
+    if (bleDeviceRef.current?.gatt?.connected) {
+      bleDeviceRef.current.gatt.disconnect();
+    }
+    bleCharacteristicRef.current = null;
+    
     setConnected(false);
     setStatus("Disconnected");
     setPingTime(0);
     SoundEngine.playShutdown();
   }, [addLog]);
+
+  const connectBLE = useCallback(async () => {
+    disconnectWiFi();
+    const bt = (navigator as any).bluetooth;
+    if (!bt) {
+      setStatus("BLE Not Supported");
+      addLog("Web Bluetooth API not supported. Use Chrome on Android/desktop.");
+      return;
+    }
+    try {
+      setStatus("Scanning...");
+      addLog("Scanning for ESP32-RC-Car via Bluetooth...");
+
+      const device = await bt.requestDevice({
+        filters: [{ name: 'ESP32-RC-Car' }],
+        optionalServices: [BLE_SERVICE_UUID],
+      });
+
+      bleDeviceRef.current = device;
+
+      device.addEventListener('gattserverdisconnected', () => {
+        setConnected(false);
+        setStatus("Disconnected");
+        addLog("BLE device disconnected.");
+        bleCharacteristicRef.current = null;
+        SoundEngine.playShutdown();
+      });
+
+      setStatus("Connecting via BLE...");
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService(BLE_SERVICE_UUID);
+      const characteristic = await service.getCharacteristic(BLE_CHARACTERISTIC_UUID);
+
+      bleCharacteristicRef.current = characteristic;
+      setConnected(true);
+      setStatus("Connected");
+      addLog(`BLE link established: ${device.name}`);
+      SoundEngine.playStartup();
+    } catch (err: any) {
+      setStatus("BLE Failed");
+      addLog(`BLE error: ${err.message}`);
+      setConnected(false);
+    }
+  }, [addLog, disconnectWiFi]);
 
   // Ping intervals
   const startPingCycle = () => {
@@ -232,6 +291,8 @@ export default function App() {
     transmissionIntervalRef.current = setInterval(() => {
       const activeState = stateRef.current;
       if (!activeState.connected) return;
+      if (activeState.debugServoActive) return;
+      if (activeState.connMode === "ble") return; // BLE uses raw single-byte writes, not JSON telemetry
 
       // Map combined parameters
       const telemetryPacket = {
@@ -308,6 +369,29 @@ export default function App() {
     setSteerAngle(newAngle);
   }, []);
 
+  const sendRawAngle = useCallback((newAngle: number) => {
+    setDebugAngle(newAngle);
+    setSteerAngle(newAngle);
+    
+    const mode = stateRef.current.connMode;
+
+    if (mode === "ble" && bleCharacteristicRef.current) {
+      const data = new Uint8Array([newAngle]);
+      bleCharacteristicRef.current.writeValue(data)
+        .then(() => addLog(`[DEBUG] BLE sent angle: ${newAngle}°`))
+        .catch((err: any) => addLog(`[DEBUG] BLE write failed: ${err.message}`));
+    } else if (mode === "ws" && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(`angle:${newAngle}`);
+      addLog(`[DEBUG] Sent raw: angle:${newAngle}`);
+    } else if (mode === "http") {
+      fetch(`http://${stateRef.current.ipAddress}/servo?angle=${newAngle}`, { mode: 'no-cors' })
+        .then(() => addLog(`[DEBUG] Sent HTTP servo angle: ${newAngle}`))
+        .catch((err) => addLog(`[DEBUG] HTTP servo angle failed: ${err.message}`));
+    } else {
+      addLog(`[DEBUG] Failed to send angle:${newAngle} (Not Connected)`);
+    }
+  }, [addLog]);
+
   const handleHornChange = useCallback((active: boolean) => {
     SoundEngine.setHorn(active);
   }, []);
@@ -358,10 +442,18 @@ export default function App() {
             {/* Connection status dot — overlaid badge */}
             <span className="absolute -bottom-0.5 -right-0.5 flex h-2 w-2">
               <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
-                connected ? "bg-emerald-400" : status === "Connecting..." || status === "Pinging..." ? "bg-amber-400" : "bg-rose-400"
+                connected
+                  ? connMode === "ble" ? "bg-blue-400" : "bg-emerald-400"
+                  : status === "Connecting..." || status === "Pinging..." || status === "Scanning..."
+                  ? "bg-amber-400"
+                  : "bg-rose-400"
               }`}></span>
               <span className={`relative inline-flex rounded-full h-2 w-2 ${
-                connected ? "bg-emerald-500" : status === "Connecting..." || status === "Pinging..." ? "bg-amber-500" : "bg-rose-500"
+                connected
+                  ? connMode === "ble" ? "bg-blue-500" : "bg-emerald-500"
+                  : status === "Connecting..." || status === "Pinging..." || status === "Scanning..."
+                  ? "bg-amber-500"
+                  : "bg-rose-500"
               }`}></span>
             </span>
           </div>
@@ -372,7 +464,7 @@ export default function App() {
               PORSCHE 911 GT2 RS
             </h1>
             <span className="text-[6.5px] sm:text-[7.5px] font-mono text-zinc-500 tracking-wider">
-              TELEMETRICS // {connected ? `LINKED: ${ipAddress}` : "OFFLINE"}
+              {connMode === "ble" ? "BLUETOOTH" : "TELEMETRICS"} // {connected ? (connMode === "ble" ? "BLE LINKED" : `LINKED: ${ipAddress}`) : "OFFLINE"}
             </span>
           </div>
         </div>
@@ -468,11 +560,16 @@ export default function App() {
         status={status}
         connected={connected}
         onConnect={connectWiFi}
+        onConnectBLE={connectBLE}
         onDisconnect={disconnectWiFi}
         logs={logs}
         onClearLogs={() => setLogs([])}
         soundMuted={soundMuted}
         setSoundMuted={setSoundMuted}
+        debugServoActive={debugServoActive}
+        setDebugServoActive={setDebugServoActive}
+        debugAngle={debugAngle}
+        sendRawAngle={sendRawAngle}
       />
     </div>
   );
