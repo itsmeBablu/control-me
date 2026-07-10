@@ -344,16 +344,29 @@ export default function App() {
 
       {/* 2. COCKPIT HEADERHUD */}
       <header className="w-full flex items-center justify-between border-b border-zinc-900 pb-1 sm:pb-2 z-10 select-none">
-        {/* Left Side: Car details */}
+        {/* Left Side: Logo + Car details */}
         <div className="flex items-center gap-2 sm:gap-3 text-left">
-          <div className="relative flex h-2 w-2 sm:h-2.5 sm:w-2.5">
-            <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
-              connected ? "bg-emerald-400" : status === "Connecting..." || status === "Pinging..." ? "bg-amber-400" : "bg-rose-400"
-            }`}></span>
-            <span className={`relative inline-flex rounded-full h-2 w-2 sm:h-2.5 sm:w-2.5 ${
-              connected ? "bg-emerald-500" : status === "Connecting..." || status === "Pinging..." ? "bg-amber-500" : "bg-rose-500"
-            }`}></span>
+          {/* Porsche SVG logo with connection status badge */}
+          <div className="relative shrink-0">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/yellow-porsche.svg"
+              alt="Porsche 911 GT2 RS"
+              className="h-7 w-7 sm:h-9 sm:w-9 md:h-10 md:w-10 object-contain drop-shadow-[0_0_6px_rgba(242,211,41,0.55)] select-none"
+              draggable={false}
+            />
+            {/* Connection status dot — overlaid badge */}
+            <span className="absolute -bottom-0.5 -right-0.5 flex h-2 w-2">
+              <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                connected ? "bg-emerald-400" : status === "Connecting..." || status === "Pinging..." ? "bg-amber-400" : "bg-rose-400"
+              }`}></span>
+              <span className={`relative inline-flex rounded-full h-2 w-2 ${
+                connected ? "bg-emerald-500" : status === "Connecting..." || status === "Pinging..." ? "bg-amber-500" : "bg-rose-500"
+              }`}></span>
+            </span>
           </div>
+
+          {/* Car name + telemetry status */}
           <div className="leading-none">
             <h1 className="text-[10px] sm:text-xs md:text-sm font-black tracking-widest text-porsche-yellow text-glow-yellow">
               PORSCHE 911 GT2 RS
